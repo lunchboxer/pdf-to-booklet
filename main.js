@@ -16,24 +16,47 @@ async function pdfToBooklet(inputPath, outputPath, options) {
   // Analyze the first page to determine size and orientation
   const firstPage = inputPdf.getPage(0)
   const { width: origWidth, height: origHeight } = firstPage.getSize()
+  if (options.debug) {
+    console.info('Running in debug mode')
+    console.info('options:', options)
+    console.info(`Input PDF has ${pageCount} pages`)
+    console.info(`Output PDF will have ${finalPageCount} pages`)
+    console.info('Analyzing first page')
+    console.info(`First page size: ${origWidth} x ${origHeight}`)
+  }
 
   // Define the output page size (A4 landscape)
   const [outputWidth, outputHeight] = options.useA3
     ? PageSizes.A3.reverse()
     : PageSizes.A4.reverse()
+  if (options.useA3 && options.debug) {
+    console.info('Using A3 size')
+  }
 
   // Calculate scaling factor
-  const scaleX = outputWidth / (2 * origWidth)
-  const scaleY = outputHeight / origHeight
+  const padding = options.padding || 0
+  const scaleX = (outputWidth / 2 - padding * 2) / origWidth
+  const scaleY = options.double
+    ? (outputHeight / 2 - padding * 2) / origHeight
+    : (outputHeight - padding * 2) / origHeight
   const scale = Math.min(scaleX, scaleY)
 
+  if (options.debug) {
+    console.info(`Output page size: ${outputWidth} × ${outputHeight}`)
+    console.info(`Padding: ${padding}`)
+    console.info(`Scaling factor: ${scale}`)
+  }
+
   // Helper function to add a page to the output PDF
-  async function addPageToOutput(pageNumber, x) {
+  async function addPageToOutput(pageNumber, x, y) {
+    if (options.debug) {
+      console.info(`Adding page ${pageNumber + 1} to output at (${x}, ${y})`)
+    }
     if (pageNumber < pageCount) {
       const [embeddedPage] = await outputPdf.embedPdf(inputPdf, [pageNumber])
       return {
-        x,
-        y: (outputHeight - origHeight * scale) / 2,
+        x: x + padding,
+        y: y + padding,
         width: origWidth * scale,
         height: origHeight * scale,
         page: embeddedPage,
@@ -41,34 +64,72 @@ async function pdfToBooklet(inputPath, outputPath, options) {
     }
   }
 
+  if (options.debug && options.double) {
+    console.info('Double printing enabled')
+  }
+
   for (let index = 0; index < finalPageCount / 2; index += 2) {
     const outputPage = outputPdf.addPage([outputWidth, outputHeight])
 
     // Back side (even page number)
-    const backLeft = await addPageToOutput(finalPageCount - 1 - index, 0)
-    const backRight = await addPageToOutput(index, outputWidth / 2)
+    const backLeftBottom = await addPageToOutput(
+      finalPageCount - 1 - index,
+      0,
+      0,
+    )
+    const backRightBottom = await addPageToOutput(index, outputWidth / 2, 0)
 
-    if (backLeft) {
-      outputPage.drawPage(backLeft.page, backLeft)
+    if (backLeftBottom) {
+      outputPage.drawPage(backLeftBottom.page, backLeftBottom)
+      if (options.double) {
+        const backLeftTop = { ...backLeftBottom, y: outputHeight / 2 + padding }
+        outputPage.drawPage(backLeftBottom.page, backLeftTop)
+      }
     }
-    if (backRight) {
-      outputPage.drawPage(backRight.page, backRight)
+    if (backRightBottom) {
+      outputPage.drawPage(backRightBottom.page, backRightBottom)
+      if (options.double) {
+        const backRightTop = {
+          ...backRightBottom,
+          y: outputHeight / 2 + padding,
+        }
+        outputPage.drawPage(backRightBottom.page, backRightTop)
+      }
     }
 
     // Front side (odd page number)
     const frontPage = outputPdf.addPage([outputWidth, outputHeight])
 
-    const frontLeft = await addPageToOutput(index + 1, 0)
-    const frontRight = await addPageToOutput(
+    const frontLeftBottom = await addPageToOutput(index + 1, 0, 0)
+    const frontRightBottom = await addPageToOutput(
       finalPageCount - 2 - index,
       outputWidth / 2,
+      0,
     )
 
-    if (frontLeft) {
-      frontPage.drawPage(frontLeft.page, frontLeft)
+    if (frontLeftBottom) {
+      frontPage.drawPage(frontLeftBottom.page, frontLeftBottom)
+      if (options.double) {
+        const frontLeftTop = {
+          ...frontLeftBottom,
+          y: outputHeight / 2 + padding,
+        }
+        frontPage.drawPage(frontLeftBottom.page, frontLeftTop)
+      }
     }
-    if (frontRight) {
-      frontPage.drawPage(frontRight.page, frontRight)
+    if (frontRightBottom) {
+      frontPage.drawPage(frontRightBottom.page, frontRightBottom)
+      if (options.double) {
+        const frontRightTop = {
+          ...frontRightBottom,
+          y: outputHeight / 2 + padding,
+        }
+        frontPage.drawPage(frontRightBottom.page, frontRightTop)
+      }
+    }
+
+    if (options.debug) {
+      console.info(`Completed page ${index + 1} of ${finalPageCount / 2}`)
     }
   }
 
@@ -78,6 +139,10 @@ async function pdfToBooklet(inputPath, outputPath, options) {
 }
 
 async function processBatch(inputDirectory, outputDirectory, options) {
+  if (options.debug) {
+    console.info(`Processing batch of PDF files in ${inputDirectory}`)
+    console.info(`Output directory: ${outputDirectory}`)
+  }
   const files = readdirSync(inputDirectory)
   for (const file of files) {
     if (file.toLowerCase().endsWith('.pdf')) {
@@ -98,15 +163,28 @@ const inputPath = arguments_[0]
 const outputPath = arguments_[1]
 const options = {
   useA3: arguments_.includes('--a3'),
+  debug: arguments_.includes('--debug'),
+  double: arguments_.includes('--double'),
+  padding: 0,
+}
+
+const paddingIndex = arguments_.indexOf('--padding')
+if (paddingIndex !== -1 && paddingIndex < arguments_.length - 1) {
+  options.padding = Number.parseFloat(arguments_[paddingIndex + 1])
 }
 
 if (!(inputPath && outputPath)) {
-  console.info('Usage: node script.js <input_path> <output_path> [--a3]')
+  console.info(
+    'Usage: node script.js <input_path> <output_path> [--a3] [--debug] [--double] [--padding <padding>]',
+  )
   console.info('  <input_path>: Path to input PDF file or directory')
   console.info(
     '  <output_path>: Path to output PDF file or directory (for batch mode)',
   )
   console.info('  --a3: Use A3 size instead of A4')
+  console.info('  --debug: Enable additional logging')
+  console.info('  --double: print two of each page')
+  console.info('  --padding: Padding between pages in points (default: 0)')
   process.exit(1)
 }
 
